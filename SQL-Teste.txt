@@ -1,0 +1,6 @@
+SQL teste
+
+select 1 from rdb$database
+ where
+  cast('a' as integer) = 0
+and cast('01.01.2019' as date) = current_date
