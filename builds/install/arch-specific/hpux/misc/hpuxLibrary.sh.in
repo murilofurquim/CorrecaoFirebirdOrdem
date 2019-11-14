@@ -1,0 +1,211 @@
+#!/bin/sh
+
+RunUser=firebird
+export RunUser
+RunGroup=firebird
+export RunGroup
+PidDir=/var/run/firebird
+export PidDir
+
+#------------------------------------------------------------------------
+# Get correct options & misc.
+
+tarExt=tar
+export tarExt
+
+#------------------------------------------------------------------------
+#  Add new user and group
+
+TryAddGroup() {
+
+	AdditionalParameter=$1
+	testStr=`grep firebird /etc/group`
+	
+    if [ -z "$testStr" ]
+      then
+        groupadd $AdditionalParameter firebird
+    fi
+	
+}
+
+
+TryAddUser() {
+
+	AdditionalParameter=$1
+	testStr=`grep firebird /etc/passwd`
+	
+    if [ -z "$testStr" ]
+      then
+        useradd $AdditionalParameter -d $FBRootDir -s /bin/false \
+            -c "Firebird Database Owner" -g firebird firebird 
+    fi
+
+}
+
+
+addFirebirdUser() {
+
+	TryAddGroup "-g 84 -r" >/dev/null 2>&1
+	TryAddGroup "-g 84" >/dev/null 2>&1
+	TryAddGroup "-r" >/dev/null 2>&1
+	TryAddGroup " "
+	
+	TryAddUser "-u 84 -r" >/dev/null 2>&1
+	TryAddUser "-u 84" >/dev/null 2>&1
+	TryAddUser "-r" >/dev/null 2>&1
+	TryAddUser " "
+
+}
+
+
+#------------------------------------------------------------------------
+#  print location of init script
+
+getInitScriptLocation() {
+    if [ -f /etc/rc.d/init.d/firebird ]
+	then
+		echo -n /etc/rc.d/init.d/firebird
+    elif [ -f /etc/rc.d/rc.firebird ]
+	then
+		echo -n /etc/rc.d/rc.firebird
+    elif [ -f /etc/init.d/firebird ]
+	then
+		echo -n /etc/init.d/firebird
+    fi
+}
+
+
+#------------------------------------------------------------------------
+#  stop super server if it is running
+
+stopSuperServerIfRunning() {
+    checkString=`ps -eaf | egrep "\b(fbserver|fbguard)\b" |grep -v grep`
+
+    if [ ! -z "$checkString" ]
+    then
+		init_d=`getInitScriptLocation`
+
+        if [ -x "$init_d" ]
+		then
+       	    $init_d stop
+		fi
+    fi
+}
+
+#-----------------------------------------------------------------------
+# Blank stub on HPUX - don't use openssl
+
+generateNewDBAPassword() {
+	return 0
+}
+
+#------------------------------------------------------------------------
+#  For security reasons most files in firebird installation are
+#  root-owned and world-readable(executable) only (including firebird).
+#  For some files RunUser and RunGroup (firebird)
+#  must have write access - lock and log for example.
+
+setFirebirdWritable() {
+    FileName=$1
+    chown $RunUser:$RunGroup $FileName
+
+	if [ "$RunUser" = "root" ]
+	# In that case we must open databases, locks, etc. to the world...
+	# That's a pity, but required if root RunUser choosen.
+	then
+    	chmod a=rw $FileName
+	else
+		# This is good secure setting
+	    chmod ug=rw,o= $FileName
+	fi
+}
+
+#------------------------------------------------------------------------
+#  Change the permissions to restrict access to server programs to 
+#  firebird group only.  This is MUCH better from a safety point of 
+#  view than installing as root user, even if it requires a little 
+#  more work.
+
+setFilePermissions() {
+    cd $FBRootDir
+
+    # For security reasons initially force all root:root non-writable
+    chown -R root:root $FBRootDir
+    chmod -R uga-w $FBRootDir
+
+	# Set up configuration files - make them root-writable
+    cd $FBRootDir
+	chmod u+w *.conf
+
+    # Prepare bin
+    cd $FBBin
+
+    # Everyone may execute clients
+    chmod a=rx *
+
+	# Should set owner uid to deliver locks correctly
+	[ -f fb_lock_mgr ] && chmod +s fb_lock_mgr
+
+    # Shell scripts changing security attributes are for root only
+    chmod u=rx,go= *.sh
+    
+    # Lock files
+    cd $FBRootDir
+    for i in init1 lock1 event1 guard1 monitor1 sem1
+    do
+        FileName=isc_$i.`hostname`
+        touch $FileName
+        setFirebirdWritable $FileName
+    done
+
+	# Log file
+    touch firebird.log
+    setFirebirdWritable firebird.log
+    
+    # Security database
+    setFirebirdWritable $SecurityDatabase
+
+	# set up libraries - everyone may use them
+	cd $FBRootDir/lib
+	chmod a=rx lib*
+
+	# set up include files - everyone may use them
+	cd $FBRootDir/include
+	chmod a=r *
+
+	# fix up examples' permissions
+    cd $FBRootDir/examples
+    # set a default of read all files in examples
+    for i in `find . -name '*' -type f -print`
+    do
+         chmod a=r $i
+    done
+    # set a default of read&search all dirs in examples
+    for i in `find . -name '*' -type d -print`
+    do
+         chmod a=rx $i
+    done
+    # make examples DB(s) writable
+    for i in `find . -name '*.fdb' -print`
+    do
+		setFirebirdWritable $i
+    done
+
+	# fix up doc permissions
+	cd $FBRootDir
+	for i in `find doc -print`; do
+		chown root:root $i
+		if [ -d $i ]; then
+			chmod 0755 $i
+		else
+			chmod 0644 $i
+		fi
+	done
+
+	# QLI's help
+	cd $FBRootDir
+    chmod a=r help/help.fdb
+
+	cd $FBRootDir
+}
+
